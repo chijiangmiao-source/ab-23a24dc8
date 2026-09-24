@@ -1,0 +1,58 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: pulse
+      POSTGRES_PASSWORD: pulse
+      POSTGRES_DB: pulsedb
+    ports:
+      # 宿主机数据库端口可配置：HOST_DB_PORT=55432 docker compose up
+      - "${HOST_DB_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pulse -d pulsedb"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://pulse:pulse@db:5432/pulsedb
+    ports:
+      # 宿主机 HTTP 端口可配置：HOST_HTTP_PORT=18000 docker compose up
+      - "${HOST_HTTP_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    restart: unless-stopped
+
+  # 冒烟服务：构建检查 + pytest + HTTP 越序补洞/并发重试/重启恢复。
+  # 只运行一次并以容器退出码报告：
+  #   docker compose up --abort-on-container-exit --exit-code-from verify
+  verify:
+    build: .
+    command: ["python", "scripts/verify.py"]
+    environment:
+      BASE_URL: http://api:8000
+      DATABASE_URL: postgresql://pulse:pulse@db:5432/pulsedb
+      DOCKER_HOST: unix:///var/run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  pgdata:
